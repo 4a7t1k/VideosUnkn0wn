@@ -1,5 +1,7 @@
 require("dotenv").config();
 const TelegramBot = require('node-telegram-bot-api');
+const express = require('express');
+const bodyParser = require('body-parser');
 const axios = require("axios");
 const FormData = require("form-data");
 const fs = require("fs");
@@ -8,6 +10,7 @@ const mongoose = require('mongoose');
 
 // --- CONFIG ---
 const TELEGRAM_BOT_TOKEN = process.env.TELEGRAM_BOT_TOKEN;
+const WEBHOOK_URL = process.env.WEBHOOK_URL; // e.g., https://your-app.onrender.com
 const VEO_API_KEY = process.env.VEO_API_KEY;
 const IMGBB_API_KEY = process.env.IMGBB_API_KEY;
 const MONGO_URI = process.env.MONGO_URI;
@@ -112,15 +115,15 @@ function extractMp4Urls(obj) {
     return [...new Set(urls)];
 }
 
-// --- TELEGRAM BOT ---
-const bot = new TelegramBot(TELEGRAM_BOT_TOKEN, { polling: true });
-console.log("🤖 Veo AI Telegram Bot started...");
+// --- TELEGRAM BOT (WEBHOOK) ---
+const bot = new TelegramBot(TELEGRAM_BOT_TOKEN);
+bot.setWebHook(`${WEBHOOK_URL}/${TELEGRAM_BOT_TOKEN}`);
 
-bot.on('polling_error', (error) => {
-    console.error(`[polling_error] ${error.code}: ${error.message}`);
-    if (error.code === 'ETELEGRAM' && error.message.includes('401 Unauthorized')) {
-        console.error("⚠️ Invalid TELEGRAM_BOT_TOKEN in .env");
-    }
+const app = express();
+app.use(bodyParser.json());
+app.post(`/${TELEGRAM_BOT_TOKEN}`, (req, res) => {
+    bot.processUpdate(req.body);
+    res.sendStatus(200);
 });
 
 // --- PROCESS VIDEO REQUEST ---
@@ -135,7 +138,6 @@ async function processVeoRequest(chatId, fullPrompt, replyToMessage) {
                 return bot.sendMessage(chatId, getLang("limitReached", OWNER_USERNAME));
         }
 
-        // Parse prompt, ratio, model
         let prompt, ratio = "9:16", model = "veo-3";
         const args = fullPrompt.split(/\s+/).filter(Boolean);
         const ratioIndex = args.findIndex(a => a.toLowerCase() === "--ar");
@@ -144,7 +146,6 @@ async function processVeoRequest(chatId, fullPrompt, replyToMessage) {
         if (VALID_MODELS.includes(potentialModel)) { model = potentialModel; args.pop(); }
         prompt = args.join(" ").trim();
 
-        // Handle image reply if any
         let imageUrls = [];
         if (replyToMessage && replyToMessage.photo) {
             if (!prompt) return bot.sendMessage(chatId, getLang("noPrompt"));
@@ -174,7 +175,7 @@ async function processVeoRequest(chatId, fullPrompt, replyToMessage) {
 
         let taskData = null;
         const maxWaitSeconds = 600, checkInterval = 5000;
-        for (let i=0; i<maxWaitSeconds/checkInterval*1000; i++) {
+        for (let i=0; i<maxWaitSeconds/checkInterval; i++) {
             await new Promise(r => setTimeout(r, checkInterval));
             try {
                 const tRes = await axios.get(taskUrl, { headers: { Authorization: `Bearer ${VEO_API_KEY}` } });
@@ -215,14 +216,18 @@ bot.onText(/^\/start$/, async msg => {
         if (!user) {
             user = new User({ userId, username: username||'N/A', firstName: first_name||'User' });
             await user.save();
-            bot.sendMessage(OWNER_ID, getLang("ownerNotified", first_name, username, userId), { parse_mode:'Markdown' });
+            bot.sendMessage
+            (OWNER_ID, getLang("ownerNotified", first_name, username, userId), { parse_mode:'Markdown' });
             return bot.sendMessage(userId, getLang("startMessage"), { parse_mode:'Markdown' });
         } else {
             if (user.isApproved) return bot.sendMessage(userId, getLang("startMessageApproved"), { parse_mode:'Markdown' });
-            else if (user.requestsMade<FREE_TIER_LIMIT) return bot.sendMessage(userId, getLang("startMessageReturningTrial"), { parse_mode:'Markdown' });
+            else if (user.requestsMade < FREE_TIER_LIMIT) return bot.sendMessage(userId, getLang("startMessageReturningTrial"), { parse_mode:'Markdown' });
             else return bot.sendMessage(userId, getLang("limitReached", OWNER_USERNAME));
         }
-    } catch (err) { console.error(err); bot.sendMessage(userId, getLang("error")); }
+    } catch (err) {
+        console.error(err);
+        bot.sendMessage(userId, getLang("error"));
+    }
 });
 
 // --- /veo Handler ---
@@ -233,51 +238,50 @@ const finalizeAndProcessPrompt = userId => {
         processVeoRequest(userId, prompt, replyToMessage);
     }
 };
+
 bot.on('message', msg => {
-    const userId = msg.from.id; const text = msg.text||'';
+    const userId = msg.from.id;
+    const text = msg.text || '';
     if (text.startsWith('/')) return;
     if (promptBuffer.has(userId)) {
         const data = promptBuffer.get(userId);
         data.prompt += ' ' + text;
         clearTimeout(data.timeoutId);
-        data.timeoutId = setTimeout(()=>finalizeAndProcessPrompt(userId), PROMPT_BUFFER_TIMEOUT);
+        data.timeoutId = setTimeout(() => finalizeAndProcessPrompt(userId), PROMPT_BUFFER_TIMEOUT);
         promptBuffer.set(userId, data);
     }
 });
+
 bot.onText(/^\/veo/i, msg => {
     const userId = msg.from.id;
-    const initialPrompt = (msg.text||'').replace(/^\/veo\s*/i,'').trim();
-    const timeoutId = setTimeout(()=>finalizeAndProcessPrompt(userId), PROMPT_BUFFER_TIMEOUT);
+    const initialPrompt = (msg.text || '').replace(/^\/veo\s*/i,'').trim();
+    const timeoutId = setTimeout(() => finalizeAndProcessPrompt(userId), PROMPT_BUFFER_TIMEOUT);
     promptBuffer.set(userId, { prompt: initialPrompt, timeoutId, replyToMessage: msg.reply_to_message });
 });
 
 // --- OWNER COMMANDS ---
 bot.onText(/^\/approve (\d+)$/, async (msg, match) => {
-    if (msg.from.id!==OWNER_ID) return bot.sendMessage(msg.chat.id, getLang("notOwner"));
+    if (msg.from.id !== OWNER_ID) return bot.sendMessage(msg.chat.id, getLang("notOwner"));
     const uid = parseInt(match[1]);
     const user = await User.findOne({ userId: uid });
     if (!user) return bot.sendMessage(msg.chat.id, getLang("userNotFound", uid));
     if (user.isApproved) return bot.sendMessage(msg.chat.id, getLang("userAlreadyApproved", user.firstName));
-    user.isApproved = true; await user.save();
+    user.isApproved = true;
+    await user.save();
     bot.sendMessage(msg.chat.id, getLang("userApproved", user.firstName, uid), { parse_mode:'Markdown' });
     bot.sendMessage(uid, getLang("startMessageApproved"), { parse_mode:'Markdown' });
 });
 
 bot.onText(/^\/users$/, async msg => {
-    if (msg.from.id!==OWNER_ID) return bot.sendMessage(msg.chat.id, getLang("notOwner"));
+    if (msg.from.id !== OWNER_ID) return bot.sendMessage(msg.chat.id, getLang("notOwner"));
     const users = await User.find({});
     if (!users.length) return bot.sendMessage(msg.chat.id, getLang("noUsers"));
     let list = getLang("userListHeader");
-    users.forEach(u=>list+=getLang("userListEntry", u.firstName, u.userId, u.isApproved?"Yes":"No", u.requestsMade));
+    users.forEach(u => list += getLang("userListEntry", u.firstName, u.userId, u.isApproved ? "Yes" : "No", u.requestsMade));
     bot.sendMessage(msg.chat.id, list, { parse_mode:'Markdown' });
 });
 
-// --- Graceful Shutdown ---
-const gracefulShutdown = async signal => {
-    console.log(`Received ${signal}, shutting down...`);
-    try { await bot.stopPolling(); await mongoose.connection.close(); console.log("Shutdown complete."); } 
-    catch (err) { console.error(err); } 
-    finally { process.exit(0); }
-};
-process.on('SIGINT',()=>gracefulShutdown('SIGINT'));
-process.on('SIGTERM',()=>gracefulShutdown('SIGTERM'));
+// --- START EXPRESS SERVER ---
+const PORT = process.env.PORT || 3000;
+app.get('/', (req, res) => res.send('Veo AI Bot is running.'));
+app.listen(PORT, () => console.log(`🚀 Server running on port ${PORT}`));
