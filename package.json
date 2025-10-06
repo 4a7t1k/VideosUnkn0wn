@@ -2,16 +2,16 @@
   "name": "veo-ai-telegram-bot",
   "version": "1.0.0",
   "description": "A Telegram bot to generate videos from text or images using the Veo AI API.",
-  "main": "veo_telegram_bot.js",
+  "main": "index.js",
+  "type": "module",
   "scripts": {
-    "start": "node index.js",
-    "test": "echo \"Error: no test specified\" && exit 1"
+    "start": "node index.js"
   },
-  "author": "",
-  "license": "ISC",
   "dependencies": {
     "axios": "^1.7.2",
     "form-data": "^4.0.0",
-    "node-telegram-bot-api": "^0.66.0"
+    "node-telegram-bot-api": "^0.66.0",
+    "mongoose": "^7.6.0",
+    "dotenv": "^16.3.0"
   }
 }
