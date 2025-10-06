@@ -4,7 +4,7 @@
   "description": "A Telegram bot to generate videos from text or images using the Veo AI API.",
   "main": "veo_telegram_bot.js",
   "scripts": {
-    "start": "node veo_telegram_bot.js",
+    "start": "node index.js",
     "test": "echo \"Error: no test specified\" && exit 1"
   },
   "author": "",
