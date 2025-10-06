@@ -19,7 +19,7 @@ const OWNER_USERNAME = process.env.OWNER_USERNAME;
 const FREE_TIER_LIMIT = parseInt(process.env.FREE_TIER_LIMIT) || 1;
 
 // --- CONSTANTS ---
-const PROMPT_BUFFER_TIMEOUT = 2000;
+const PROMPT_BUFFER_TIMEOUT = 20000;
 const promptBuffer = new Map();
 const VEO_API_URL = "https://api.paxsenix.org/ai-video/veo-3";
 const VALID_RATIOS = ["16:9", "9:16"];
